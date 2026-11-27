@@ -8,12 +8,14 @@ export type CompiledQuery = {
 
 export type Operator = "=" | "<>" | "<" | "<=" | ">" | ">=" | "LIKE" | "ILIKE";
 export type Direction = "ASC" | "DESC";
+export type AggregateFunction = "COUNT" | "SUM" | "AVG" | "MIN" | "MAX";
 
 const OPERATORS: ReadonlySet<string> = new Set(["=", "<>", "<", "<=", ">", ">=", "LIKE", "ILIKE"]);
 const DIRECTIONS: ReadonlySet<string> = new Set(["ASC", "DESC"]);
+const AGGREGATES: ReadonlySet<string> = new Set(["COUNT", "SUM", "AVG", "MIN", "MAX"]);
 
 type Condition = {
-  readonly column: string; // déjà validé et entre guillemets
+  readonly column: string; // colonne ou agrégat, déjà validé et entre guillemets
   readonly operator: Operator;
   readonly value: unknown;
 };
@@ -23,6 +25,8 @@ type SelectState = {
   readonly columns: readonly string[];
   readonly joins: readonly string[];
   readonly wheres: readonly Condition[];
+  readonly groups: readonly string[];
+  readonly havings: readonly Condition[];
   readonly orders: readonly string[];
   readonly limit: number | undefined;
   readonly offset: number | undefined;
@@ -31,6 +35,34 @@ type SelectState = {
 /** `"journeys" AS "j"` ou `"journeys"` */
 const tableWithAlias = (table: string, alias: string | undefined): string =>
   alias === undefined ? quoteIdentifier(table) : `${quoteIdentifier(table)} AS ${quoteIdentifier(alias)}`;
+
+const assertOperator = (operator: string): void => {
+  // Le type empêche déjà un mauvais opérateur, mais un opérateur peut venir d'une donnée externe.
+  if (!OPERATORS.has(operator)) {
+    throw new QueryBuilderError(`Opérateur non autorisé : "${operator}"`);
+  }
+};
+
+/**
+ * `COUNT(*)`, `COUNT(DISTINCT "s"."id")`, `SUM("price")`...
+ * `*` n'est accepté qu'avec COUNT, sans DISTINCT.
+ */
+const aggregate = (fn: AggregateFunction, column: string, distinct: boolean): string => {
+  if (!AGGREGATES.has(fn)) {
+    throw new QueryBuilderError(`Fonction d'agrégation non autorisée : "${fn}"`);
+  }
+  if (column === "*") {
+    if (fn !== "COUNT" || distinct) {
+      throw new QueryBuilderError(`"*" n'est autorisé qu'avec COUNT, sans DISTINCT`);
+    }
+    return "COUNT(*)";
+  }
+  return `${fn}(${distinct ? "DISTINCT " : ""}${quoteIdentifier(column)})`;
+};
+
+/** Numérote les conditions à partir de $start : `"a" = $1 AND "b" > $2` */
+const conditions = (list: readonly Condition[], start: number): string =>
+  list.map((c, i) => `${c.column} ${c.operator} $${start + i}`).join(" AND ");
 
 /** LIMIT et OFFSET doivent être des entiers positifs ou nuls. */
 const assertCount = (name: string, value: number): void => {
@@ -84,13 +116,41 @@ export class SelectQuery {
 
   /** Ajoute une condition. Plusieurs where() sont combinés avec AND. La valeur est toujours liée. */
   where(column: string, operator: Operator, value: unknown): SelectQuery {
-    // Le type empêche déjà un mauvais opérateur, mais un opérateur peut venir d'une donnée externe.
-    if (!OPERATORS.has(operator)) {
-      throw new QueryBuilderError(`Opérateur non autorisé : "${operator}"`);
-    }
+    assertOperator(operator);
     return new SelectQuery({
       ...this.#state,
       wheres: [...this.#state.wheres, { column: quoteIdentifier(column), operator, value }],
+    });
+  }
+
+  /** Ajoute une colonne calculée : `COUNT(DISTINCT "s"."id") AS "step_count"`. */
+  selectAggregate(fn: AggregateFunction, column: string, alias: string, distinct = false): SelectQuery {
+    return new SelectQuery({
+      ...this.#state,
+      columns: [...this.#state.columns, `${aggregate(fn, column, distinct)} AS ${quoteIdentifier(alias)}`],
+    });
+  }
+
+  /** Regroupe les lignes : obligatoire pour mélanger colonnes simples et agrégats. */
+  groupBy(...columns: readonly string[]): SelectQuery {
+    return new SelectQuery({
+      ...this.#state,
+      groups: [...this.#state.groups, ...columns.map(quoteIdentifier)],
+    });
+  }
+
+  /** Condition sur un agrégat, après le regroupement : `HAVING COUNT(*) > $1`. La valeur est liée. */
+  having(
+    fn: AggregateFunction,
+    column: string,
+    operator: Operator,
+    value: unknown,
+    distinct = false,
+  ): SelectQuery {
+    assertOperator(operator);
+    return new SelectQuery({
+      ...this.#state,
+      havings: [...this.#state.havings, { column: aggregate(fn, column, distinct), operator, value }],
     });
   }
 
@@ -119,24 +179,26 @@ export class SelectQuery {
 
   /** Produit le SQL et les valeurs. Aucune valeur n'est jamais concaténée dans le texte. */
   toSQL(): CompiledQuery {
-    const { from, columns, joins, wheres, orders, limit, offset } = this.#state;
+    const { from, columns, joins, wheres, groups, havings, orders, limit, offset } = this.#state;
 
-    // Les valeurs dans l'ordre où leurs $n apparaissent : WHERE, puis LIMIT, puis OFFSET.
+    // Les valeurs dans l'ordre où leurs $n apparaissent : WHERE, HAVING, LIMIT, OFFSET.
     const values: readonly unknown[] = [
       ...wheres.map((c) => c.value),
+      ...havings.map((c) => c.value),
       ...(limit === undefined ? [] : [limit]),
       ...(offset === undefined ? [] : [offset]),
     ];
-    const limitIndex = wheres.length + 1;
+    const havingStart = wheres.length + 1;
+    const limitIndex = havingStart + havings.length;
     const offsetIndex = limit === undefined ? limitIndex : limitIndex + 1;
 
     const parts = [
       `SELECT ${columns.length === 0 ? "*" : columns.join(", ")}`,
       `FROM ${from}`,
       ...joins,
-      ...(wheres.length === 0
-        ? []
-        : [`WHERE ${wheres.map((c, i) => `${c.column} ${c.operator} $${i + 1}`).join(" AND ")}`]),
+      ...(wheres.length === 0 ? [] : [`WHERE ${conditions(wheres, 1)}`]),
+      ...(groups.length === 0 ? [] : [`GROUP BY ${groups.join(", ")}`]),
+      ...(havings.length === 0 ? [] : [`HAVING ${conditions(havings, havingStart)}`]),
       ...(orders.length === 0 ? [] : [`ORDER BY ${orders.join(", ")}`]),
       ...(limit === undefined ? [] : [`LIMIT $${limitIndex}`]),
       ...(offset === undefined ? [] : [`OFFSET $${offsetIndex}`]),
@@ -153,6 +215,8 @@ export const from = (table: string, alias?: string): SelectQuery =>
     columns: [],
     joins: [],
     wheres: [],
+    groups: [],
+    havings: [],
     orders: [],
     limit: undefined,
     offset: undefined,
