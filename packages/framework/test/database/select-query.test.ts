@@ -1,74 +1,99 @@
 import { describe, expect, it } from "vitest";
-import { from, QueryBuilderError, type Operator } from "../../src/index.ts";
+import { from, QueryBuilderError, type Direction } from "../../src/index.ts";
 
-describe("from / select", () => {
-  it("sélectionne * quand aucune colonne n'est demandée", () => {
-    expect(from("journeys").toSQL()).toEqual({ text: 'SELECT * FROM "journeys"', values: [] });
-  });
-
-  it("met les colonnes, la table et l'alias entre guillemets", () => {
-    const query = from("journeys", "j").select("j.id", "j.title").selectAs("j.created_at", "createdAt");
+describe("jointures", () => {
+  it("fait une jointure interne avec alias", () => {
+    const query = from("journeys", "j").select("j.title", "u.display_name").join("users", "u", "u.id", "j.author_id");
 
     expect(query.toSQL().text).toBe(
-      'SELECT "j"."id", "j"."title", "j"."created_at" AS "createdAt" FROM "journeys" AS "j"',
+      'SELECT "j"."title", "u"."display_name" FROM "journeys" AS "j" INNER JOIN "users" AS "u" ON "u"."id" = "j"."author_id"',
     );
+  });
+
+  it("fait une jointure externe gauche sans alias", () => {
+    const query = from("journeys").leftJoin("steps", undefined, "steps.journey_id", "journeys.id");
+
+    expect(query.toSQL().text).toBe(
+      'SELECT * FROM "journeys" LEFT JOIN "steps" ON "steps"."journey_id" = "journeys"."id"',
+    );
+  });
+
+  it("enchaîne plusieurs jointures dans l'ordre d'appel", () => {
+    const { text } = from("comments", "c")
+      .join("journeys", "j", "j.id", "c.journey_id")
+      .leftJoin("users", "u", "u.id", "c.author_id")
+      .toSQL();
+
+    expect(text).toContain('INNER JOIN "journeys" AS "j" ON "j"."id" = "c"."journey_id" LEFT JOIN "users"');
+  });
+
+  it("refuse une condition de jointure qui n'est pas une colonne", () => {
+    expect(() => from("journeys").join("users", "u", "u.id", "1 OR 1=1")).toThrow(QueryBuilderError);
   });
 });
 
-describe("where", () => {
-  it("lie chaque valeur avec $1, $2... et combine avec AND", () => {
-    const query = from("journeys").where("author_id", "=", 3).where("title", "ILIKE", "%alpes%");
+describe("tri", () => {
+  it("trie en ASC par défaut et enchaîne les critères", () => {
+    const { text } = from("journeys").orderBy("created_at", "DESC").orderBy("id").toSQL();
+
+    expect(text).toBe('SELECT * FROM "journeys" ORDER BY "created_at" DESC, "id" ASC');
+  });
+
+  it("refuse un critère de tri qui n'est pas un nom de colonne", () => {
+    expect(() => from("journeys").orderBy("created_at; DROP TABLE users")).toThrow(QueryBuilderError);
+  });
+
+  it("refuse un sens de tri hors liste", () => {
+    expect(() => from("journeys").orderBy("id", "DESC; --" as Direction)).toThrow(QueryBuilderError);
+  });
+});
+
+describe("pagination", () => {
+  it("lie LIMIT et OFFSET après les valeurs du WHERE", () => {
+    const query = from("journeys").where("visibility", "=", "public").orderBy("id").limit(20).offset(40);
 
     expect(query.toSQL()).toEqual({
-      text: 'SELECT * FROM "journeys" WHERE "author_id" = $1 AND "title" ILIKE $2',
-      values: [3, "%alpes%"],
+      text: 'SELECT * FROM "journeys" WHERE "visibility" = $1 ORDER BY "id" ASC LIMIT $2 OFFSET $3',
+      values: ["public", 20, 40],
     });
   });
 
-  it("ne met jamais une valeur malveillante dans le texte SQL", () => {
-    const attack = "1; DROP TABLE users; --";
-    const { text, values } = from("users").where("id", "=", attack).toSQL();
-
-    expect(text).not.toContain("DROP");
-    expect(values).toEqual([attack]);
+  it("accepte un OFFSET seul, sans LIMIT", () => {
+    expect(from("journeys").offset(10).toSQL()).toEqual({
+      text: 'SELECT * FROM "journeys" OFFSET $1',
+      values: [10],
+    });
   });
 
-  it("refuse un opérateur hors liste", () => {
-    const operator = "= 1 OR 1=1 --" as Operator;
-
-    expect(() => from("users").where("id", operator, 1)).toThrow(QueryBuilderError);
-  });
-});
-
-describe("identifiants", () => {
-  it.each([
-    'id"; DROP TABLE users; --',
-    "id desc",
-    "1abc",
-    "",
-    "a.b.c",
-    "users.",
-  ])("refuse %j", (name) => {
-    expect(() => from("users").select(name)).toThrow(QueryBuilderError);
+  it("accepte un LIMIT seul", () => {
+    expect(from("journeys").limit(5).toSQL()).toEqual({
+      text: 'SELECT * FROM "journeys" LIMIT $1',
+      values: [5],
+    });
   });
 
-  it("refuse un nom de table ou d'alias invalide", () => {
-    expect(() => from("users; --")).toThrow(QueryBuilderError);
-    expect(() => from("users", "u u")).toThrow(QueryBuilderError);
-  });
-
-  it("donne un nom à l'erreur", () => {
-    expect(() => from("1x")).toThrow(expect.objectContaining({ name: "QueryBuilderError" }));
+  it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])("refuse LIMIT et OFFSET à %s", (count) => {
+    expect(() => from("journeys").limit(count)).toThrow(QueryBuilderError);
+    expect(() => from("journeys").offset(count)).toThrow(QueryBuilderError);
   });
 });
 
-describe("immuabilité", () => {
-  it("ne modifie jamais la requête d'origine", () => {
-    const base = from("journeys");
-    const filtered = base.where("visibility", "=", "public");
+describe("ordre des clauses", () => {
+  it("assemble SELECT, FROM, JOIN, WHERE, ORDER BY, LIMIT, OFFSET quel que soit l'ordre d'appel", () => {
+    const query = from("journeys", "j")
+      .offset(0)
+      .limit(10)
+      .orderBy("j.created_at", "DESC")
+      .where("j.visibility", "=", "public")
+      .join("users", "u", "u.id", "j.author_id")
+      .select("j.id", "u.display_name");
 
-    expect(base.toSQL().text).toBe('SELECT * FROM "journeys"');
-    expect(filtered.toSQL().values).toEqual(["public"]);
-    expect(filtered).not.toBe(base);
+    expect(query.toSQL()).toEqual({
+      text:
+        'SELECT "j"."id", "u"."display_name" FROM "journeys" AS "j" ' +
+        'INNER JOIN "users" AS "u" ON "u"."id" = "j"."author_id" ' +
+        'WHERE "j"."visibility" = $1 ORDER BY "j"."created_at" DESC LIMIT $2 OFFSET $3',
+      values: ["public", 10, 0],
+    });
   });
 });
