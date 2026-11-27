@@ -1,10 +1,14 @@
 import { QueryBuilderError, quoteIdentifier } from "./identifiers.ts";
 import {
+  anyCondition,
   columnValues,
   condition,
-  conditions,
+  nullCondition,
+  orCondition,
+  renderConditions,
   returningClause,
   type CompiledQuery,
+  type Comparison,
   type Condition,
   type Operator,
 } from "./sql-parts.ts";
@@ -81,7 +85,27 @@ export class UpdateQuery {
   }
 
   where(column: string, operator: Operator, value: unknown): UpdateQuery {
-    return new UpdateQuery({ ...this.#state, wheres: [...this.#state.wheres, condition(column, operator, value)] });
+    return this.#addWhere(condition(column, operator, value));
+  }
+
+  whereNull(column: string): UpdateQuery {
+    return this.#addWhere(nullCondition(column, true));
+  }
+
+  whereNotNull(column: string): UpdateQuery {
+    return this.#addWhere(nullCondition(column, false));
+  }
+
+  whereIn(column: string, values: readonly unknown[]): UpdateQuery {
+    return this.#addWhere(anyCondition(column, values));
+  }
+
+  whereAny(comparisons: readonly Comparison[]): UpdateQuery {
+    return this.#addWhere(orCondition(comparisons));
+  }
+
+  #addWhere(c: Condition): UpdateQuery {
+    return new UpdateQuery({ ...this.#state, wheres: [...this.#state.wheres, c] });
   }
 
   returning(...columns: readonly string[]): UpdateQuery {
@@ -98,16 +122,14 @@ export class UpdateQuery {
     if (wheres.length === 0) {
       throw new QueryBuilderError(`UPDATE de ${table} sans WHERE refusé`);
     }
+    const where = renderConditions(wheres, entries.length + 1);
     const parts = [
       `UPDATE ${table}`,
       `SET ${entries.map(([column], i) => `${column} = $${i + 1}`).join(", ")}`,
-      `WHERE ${conditions(wheres, entries.length + 1)}`,
+      `WHERE ${where.text}`,
       ...returningClause(returning),
     ];
-    return {
-      text: parts.join(" "),
-      values: [...entries.map(([, value]) => value), ...wheres.map((c) => c.value)],
-    };
+    return { text: parts.join(" "), values: [...entries.map(([, value]) => value), ...where.values] };
   }
 }
 
@@ -131,7 +153,27 @@ export class DeleteQuery {
   }
 
   where(column: string, operator: Operator, value: unknown): DeleteQuery {
-    return new DeleteQuery({ ...this.#state, wheres: [...this.#state.wheres, condition(column, operator, value)] });
+    return this.#addWhere(condition(column, operator, value));
+  }
+
+  whereNull(column: string): DeleteQuery {
+    return this.#addWhere(nullCondition(column, true));
+  }
+
+  whereNotNull(column: string): DeleteQuery {
+    return this.#addWhere(nullCondition(column, false));
+  }
+
+  whereIn(column: string, values: readonly unknown[]): DeleteQuery {
+    return this.#addWhere(anyCondition(column, values));
+  }
+
+  whereAny(comparisons: readonly Comparison[]): DeleteQuery {
+    return this.#addWhere(orCondition(comparisons));
+  }
+
+  #addWhere(c: Condition): DeleteQuery {
+    return new DeleteQuery({ ...this.#state, wheres: [...this.#state.wheres, c] });
   }
 
   returning(...columns: readonly string[]): DeleteQuery {
@@ -144,8 +186,9 @@ export class DeleteQuery {
     if (wheres.length === 0) {
       throw new QueryBuilderError(`DELETE de ${table} sans WHERE refusé`);
     }
-    const parts = [`DELETE FROM ${table}`, `WHERE ${conditions(wheres, 1)}`, ...returningClause(returning)];
-    return { text: parts.join(" "), values: wheres.map((c) => c.value) };
+    const where = renderConditions(wheres, 1);
+    const parts = [`DELETE FROM ${table}`, `WHERE ${where.text}`, ...returningClause(returning)];
+    return { text: parts.join(" "), values: where.values };
   }
 }
 
