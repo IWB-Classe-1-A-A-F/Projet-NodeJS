@@ -44,7 +44,7 @@ Ou avec Docker : `docker compose up -d` (API + PostgreSQL), puis http://localhos
 
 ```bash
 # Outils de développement, à la racine (partagés par tout le monorepo)
-npm install -D typescript @types/node rolldown tsx vitest @vitest/coverage-v8
+npm install -D typescript @types/node rolldown tsx vitest
 
 # Dépendances de production de l'application
 npm install -w @projet/api pg bcryptjs jsonwebtoken
