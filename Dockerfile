@@ -17,12 +17,12 @@ RUN npm ci
 COPY --chown=node:node . .
 RUN npm run typecheck && npm run test && npm run build
 
-# --- Production : uniquement le bundle, ni sources TS ni node_modules (§2.11) ---
+# --- Production : uniquement le bundle, ni sources TS ni node_modules ---
 FROM node:26.13.1-alpine3.24 AS production
 ENV NODE_ENV=production
 WORKDIR /home/node/app
 COPY --chown=node:node --from=build /home/node/app/apps/api/dist ./dist
-# Conteneur non-root (§2.12)
+# Conteneur non-root
 USER node
 EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \

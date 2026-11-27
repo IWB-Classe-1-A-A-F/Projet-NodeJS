@@ -1,7 +1,7 @@
 import { defineConfig } from "rolldown";
 
 // Tout est regroupé dans dist/main.js (framework et dépendances compris) :
-// l'image de production ne contient ni sources TypeScript ni node_modules (§2.11).
+// l'image de production ne contient ni sources TypeScript ni node_modules.
 export default defineConfig({
   platform: "node",
   input: "src/main.ts",
