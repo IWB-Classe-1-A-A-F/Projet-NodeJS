@@ -2,4 +2,4 @@
 export { HttpError, isHttpError } from "./errors.ts";
 export type { ErrorBody } from "./errors.ts";
 export { QueryBuilderError, quoteIdentifier } from "./database/identifiers.ts";
-export { SelectQuery, from, type CompiledQuery, type Direction, type Operator } from "./database/select-query.ts";
+export { SelectQuery, from, type CompiledQuery, type Direction, type Operator,type AggregateFunction, } from "./database/select-query.ts";
