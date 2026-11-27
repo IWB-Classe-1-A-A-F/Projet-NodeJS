@@ -1,9 +1,13 @@
 import { QueryBuilderError, quoteIdentifier } from "./identifiers.ts";
 import {
+  anyCondition,
   assertOperator,
   condition,
-  conditions,
+  nullCondition,
+  orCondition,
+  renderConditions,
   type CompiledQuery,
+  type Comparison,
   type Condition,
   type Operator,
 } from "./sql-parts.ts";
@@ -99,7 +103,31 @@ export class SelectQuery {
 
   /** Ajoute une condition. Plusieurs where() sont combinés avec AND. La valeur est toujours liée. */
   where(column: string, operator: Operator, value: unknown): SelectQuery {
-    return new SelectQuery({ ...this.#state, wheres: [...this.#state.wheres, condition(column, operator, value)] });
+    return this.#addWhere(condition(column, operator, value));
+  }
+
+  /** `"colonne" IS NULL`, par exemple pour exclure les lignes supprimées logiquement. */
+  whereNull(column: string): SelectQuery {
+    return this.#addWhere(nullCondition(column, true));
+  }
+
+  /** `"colonne" IS NOT NULL` */
+  whereNotNull(column: string): SelectQuery {
+    return this.#addWhere(nullCondition(column, false));
+  }
+
+  /** La colonne vaut l'une des valeurs de la liste. Toute la liste est UNE seule valeur liée. */
+  whereIn(column: string, values: readonly unknown[]): SelectQuery {
+    return this.#addWhere(anyCondition(column, values));
+  }
+
+  /** Au moins une des comparaisons est vraie : `("title" ILIKE $1 OR "summary" ILIKE $2)`. */
+  whereAny(comparisons: readonly Comparison[]): SelectQuery {
+    return this.#addWhere(orCondition(comparisons));
+  }
+
+  #addWhere(c: Condition): SelectQuery {
+    return new SelectQuery({ ...this.#state, wheres: [...this.#state.wheres, c] });
   }
 
   /** Ajoute une colonne calculée : `COUNT(DISTINCT "s"."id") AS "step_count"`. */
@@ -129,7 +157,7 @@ export class SelectQuery {
     assertOperator(operator);
     return new SelectQuery({
       ...this.#state,
-      havings: [...this.#state.havings, { column: aggregate(fn, column, distinct), operator, value }],
+      havings: [...this.#state.havings, { kind: "compare", column: aggregate(fn, column, distinct), operator, value }],
     });
   }
 
@@ -160,24 +188,25 @@ export class SelectQuery {
   toSQL(): CompiledQuery {
     const { from, columns, joins, wheres, groups, havings, orders, limit, offset } = this.#state;
 
-    // Les valeurs dans l'ordre où leurs $n apparaissent : WHERE, HAVING, LIMIT, OFFSET.
+    // Les $n suivent l'ordre du SQL : WHERE, HAVING, LIMIT, OFFSET.
+    const where = renderConditions(wheres, 1);
+    const having = renderConditions(havings, 1 + where.values.length);
+    const limitIndex = 1 + where.values.length + having.values.length;
+    const offsetIndex = limit === undefined ? limitIndex : limitIndex + 1;
     const values: readonly unknown[] = [
-      ...wheres.map((c) => c.value),
-      ...havings.map((c) => c.value),
+      ...where.values,
+      ...having.values,
       ...(limit === undefined ? [] : [limit]),
       ...(offset === undefined ? [] : [offset]),
     ];
-    const havingStart = wheres.length + 1;
-    const limitIndex = havingStart + havings.length;
-    const offsetIndex = limit === undefined ? limitIndex : limitIndex + 1;
 
     const parts = [
       `SELECT ${columns.length === 0 ? "*" : columns.join(", ")}`,
       `FROM ${from}`,
       ...joins,
-      ...(wheres.length === 0 ? [] : [`WHERE ${conditions(wheres, 1)}`]),
+      ...(wheres.length === 0 ? [] : [`WHERE ${where.text}`]),
       ...(groups.length === 0 ? [] : [`GROUP BY ${groups.join(", ")}`]),
-      ...(havings.length === 0 ? [] : [`HAVING ${conditions(havings, havingStart)}`]),
+      ...(havings.length === 0 ? [] : [`HAVING ${having.text}`]),
       ...(orders.length === 0 ? [] : [`ORDER BY ${orders.join(", ")}`]),
       ...(limit === undefined ? [] : [`LIMIT $${limitIndex}`]),
       ...(offset === undefined ? [] : [`OFFSET $${offsetIndex}`]),
