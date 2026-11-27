@@ -1,24 +1,18 @@
 import { QueryBuilderError, quoteIdentifier } from "./identifiers.ts";
+import {
+  assertOperator,
+  condition,
+  conditions,
+  type CompiledQuery,
+  type Condition,
+  type Operator,
+} from "./sql-parts.ts";
 
-/** Requête prête pour pg : le SQL avec $1, $2... et les valeurs liées, séparément. */
-export type CompiledQuery = {
-  readonly text: string;
-  readonly values: readonly unknown[];
-};
-
-export type Operator = "=" | "<>" | "<" | "<=" | ">" | ">=" | "LIKE" | "ILIKE";
 export type Direction = "ASC" | "DESC";
 export type AggregateFunction = "COUNT" | "SUM" | "AVG" | "MIN" | "MAX";
 
-const OPERATORS: ReadonlySet<string> = new Set(["=", "<>", "<", "<=", ">", ">=", "LIKE", "ILIKE"]);
 const DIRECTIONS: ReadonlySet<string> = new Set(["ASC", "DESC"]);
 const AGGREGATES: ReadonlySet<string> = new Set(["COUNT", "SUM", "AVG", "MIN", "MAX"]);
-
-type Condition = {
-  readonly column: string; // colonne ou agrégat, déjà validé et entre guillemets
-  readonly operator: Operator;
-  readonly value: unknown;
-};
 
 type SelectState = {
   readonly from: string; // déjà validé et entre guillemets
@@ -36,13 +30,6 @@ type SelectState = {
 const tableWithAlias = (table: string, alias: string | undefined): string =>
   alias === undefined ? quoteIdentifier(table) : `${quoteIdentifier(table)} AS ${quoteIdentifier(alias)}`;
 
-const assertOperator = (operator: string): void => {
-  // Le type empêche déjà un mauvais opérateur, mais un opérateur peut venir d'une donnée externe.
-  if (!OPERATORS.has(operator)) {
-    throw new QueryBuilderError(`Opérateur non autorisé : "${operator}"`);
-  }
-};
-
 /**
  * `COUNT(*)`, `COUNT(DISTINCT "s"."id")`, `SUM("price")`...
  * `*` n'est accepté qu'avec COUNT, sans DISTINCT.
@@ -59,10 +46,6 @@ const aggregate = (fn: AggregateFunction, column: string, distinct: boolean): st
   }
   return `${fn}(${distinct ? "DISTINCT " : ""}${quoteIdentifier(column)})`;
 };
-
-/** Numérote les conditions à partir de $start : `"a" = $1 AND "b" > $2` */
-const conditions = (list: readonly Condition[], start: number): string =>
-  list.map((c, i) => `${c.column} ${c.operator} $${start + i}`).join(" AND ");
 
 /** LIMIT et OFFSET doivent être des entiers positifs ou nuls. */
 const assertCount = (name: string, value: number): void => {
@@ -116,11 +99,7 @@ export class SelectQuery {
 
   /** Ajoute une condition. Plusieurs where() sont combinés avec AND. La valeur est toujours liée. */
   where(column: string, operator: Operator, value: unknown): SelectQuery {
-    assertOperator(operator);
-    return new SelectQuery({
-      ...this.#state,
-      wheres: [...this.#state.wheres, { column: quoteIdentifier(column), operator, value }],
-    });
+    return new SelectQuery({ ...this.#state, wheres: [...this.#state.wheres, condition(column, operator, value)] });
   }
 
   /** Ajoute une colonne calculée : `COUNT(DISTINCT "s"."id") AS "step_count"`. */
