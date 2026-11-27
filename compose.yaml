@@ -1,0 +1,36 @@
+# Environnement de développement : `docker compose up`
+services:
+  api:
+    build:
+      dockerfile: Dockerfile
+      target: development
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/home/node/app
+      - node_modules:/home/node/app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  node_modules:

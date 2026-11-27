@@ -1,0 +1,6 @@
+services:
+  api:
+    image: amin/api:0.2.0
+    build:
+      dockerfile: Dockerfile
+      target: production

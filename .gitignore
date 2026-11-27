@@ -1,0 +1,23 @@
+# Dépendances et sorties (§5.4)
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Secrets : uniquement par variables d'environnement (§2.9)
+.env
+.env.*
+!.env.example
+
+# Fichiers téléversés et données locales
+uploads/
+storage/
+*.sql.gz
+pgdata/
+
+# Système / éditeurs
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea/
