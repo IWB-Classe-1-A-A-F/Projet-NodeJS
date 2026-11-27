@@ -1,6 +1,6 @@
 import { defineConfig } from "vitest/config";
 
-// Seuls les tests du framework sont exigés (§2.10).
+// Seuls les tests du framework sont exigés.
 // Si une seule métrique passe sous 100 %, `npm test` échoue : c'est voulu.
 export default defineConfig({
   test: {

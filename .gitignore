@@ -1,10 +1,10 @@
-# Dépendances et sorties (§5.4)
+# Dépendances et sorties 
 node_modules/
 dist/
 coverage/
 *.tsbuildinfo
 
-# Secrets : uniquement par variables d'environnement (§2.9)
+# Secrets : uniquement par variables d'environnement 
 .env
 .env.*
 !.env.example
